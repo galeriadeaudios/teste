@@ -1,0 +1,168 @@
+#!/bin/bash
+
+set -e
+
+LOCAL_DIR=$(pwd)
+
+VERSION_SUFIX="${REPOSITORY_PATH}.${PACKAGE_RELEASE}"
+
+echo "LOCAL_DIR: ${LOCAL_DIR}"
+echo "PACKAGE_VERSION: ${PACKAGE_VERSION}"
+echo "PACKAGE_NAME: ${PACKAGE_NAME}"
+echo "PACKAGE_RELEASE: ${PACKAGE_RELEASE}"
+echo "VERSION_SUFIX: ${VERSION_SUFIX}"
+echo "REPOSITORY_PATH: ${REPOSITORY_PATH}"
+echo "TARGET_DISTRO: ${TARGET_DISTRO}"
+echo "TARGET_DISTRO_VERSION: ${TARGET_DISTRO_VERSION}"
+
+###########################################################################
+## 	Montando o diretório de trabalho para o pacote deb
+
+echo "Creating DEB Packaging Workspace."
+rm -Rf ~/debbuild
+mkdir -p ~/debbuild/BUILDROOT/DEBIAN
+mkdir -p ~/debbuild/SOURCES
+cp -r "src" ~/debbuild/SOURCES
+
+echo "Version Control System. ${PACKAGE_VERSION}-${REPOSITORY_PATH%%[^a-z]*}.${PACKAGE_RELEASE}"
+eval "sed -i 's,^VERSION=\\\".*,VERSION=\\\"${PACKAGE_VERSION}-${REPOSITORY_PATH%%[^a-z]*}.${PACKAGE_RELEASE}\\\",g' ~/debbuild/SOURCES/src/${PACKAGE_NAME}.sh"
+
+###########################################################################
+## 	Instalando programa em ~/debbuild/BUILDROOT/
+
+echo "Installing program in ~/debbuild/BUILDROOT/."
+cd ~/debbuild/SOURCES
+cat >${PACKAGE_NAME} <<-EOF
+	#!/bin/bash
+	/usr/lib/${PACKAGE_NAME}/${PACKAGE_NAME}.sh \${@}
+EOF
+
+mkdir -p ~/debbuild/BUILDROOT/usr/bin
+install -m 0755 ${PACKAGE_NAME} ~/debbuild/BUILDROOT/usr/bin/
+mkdir -p ~/debbuild/BUILDROOT/usr/lib/${PACKAGE_NAME}
+cp -r ./src/* ~/debbuild/BUILDROOT/usr/lib/${PACKAGE_NAME}/
+
+echo "Checking installed size."
+INSTALLED_SIZE=$(du -s ~/debbuild/BUILDROOT)
+INSTALLED_SIZE=${INSTALLED_SIZE%%[^0-9]*}
+cd "${LOCAL_DIR}"
+
+###########################################################################
+## 	Criando arquivos de controle para o pacote deb.
+
+mapfile -t array < <(grep -n "^#" README.md | grep "${PACKAGE_NAME}" -A1 | cut -d: -f1)
+DESCRIPTION="$(sed -n "${array[0]},${array[1]:-\$} p" README.md | sed "/^#\|^$/d")"
+
+echo "Creating ~/debbuild/BUILDROOT/DEBIAN/control"
+echo \
+"Package:${PACKAGE_NAME}
+Version: ${PACKAGE_VERSION}-${VERSION_SUFIX}
+Architecture: amd64
+Depends: tree, xmlstarlet
+Installed-Size: ${INSTALLED_SIZE}
+Maintainer: Jonatha Domingos Fogaça <jonatha.fogaca@digitro.com>
+Description: ${DESCRIPTION}
+" >~/debbuild/BUILDROOT/DEBIAN/control
+
+echo "#################################"
+cat ~/debbuild/BUILDROOT/DEBIAN/control
+echo "#################################"
+
+###########################################################################
+## 	Criando changelog para o pacote deb.
+
+mapfile -t array < <(grep -n "^#" README.md | grep "Changelog" -A1 | cut -d: -f1)
+CHANGELOG="$(sed -n "${array[0]},${array[1]:-\$} p" README.md | sed "/^#\|^$/d")"
+
+TEMPSTRING=""
+echo >~/debbuild/BUILDROOT/DEBIAN/changelog
+while read -r line; do
+	if [[ "${line}" =~ ^\* ]]; then
+		echo "${TEMPSTRING}" >>~/debbuild/BUILDROOT/DEBIAN/changelog
+		echo "${PACKAGE_NAME} (${line##*- }) unstable; urgency=low" >>~/debbuild/BUILDROOT/DEBIAN/changelog
+		TEMPSTRING="${line% -*}"
+		TEMPSTRING=" -- ${TEMPSTRING:18}  ${TEMPSTRING:2:3}, ${TEMPSTRING:10:2} ${TEMPSTRING:6:3} 00:00:00 +0300"
+	elif [[ "${line}" =~ ^"-" ]]; then
+		echo "  *${line:1}" >>~/debbuild/BUILDROOT/DEBIAN/changelog
+	fi
+done <<<"${CHANGELOG}"
+echo "${TEMPSTRING}" >>~/debbuild/BUILDROOT/DEBIAN/changelog
+sed -i '/^$/d' ~/debbuild/BUILDROOT/DEBIAN/changelog
+mkdir -p ~/debbuild/BUILDROOT/usr/share/doc/${PACKAGE_NAME}
+gzip -9 -c ~/debbuild/BUILDROOT/DEBIAN/changelog >~/debbuild/BUILDROOT/usr/share/doc/${PACKAGE_NAME}/changelog.Debian.gz
+
+echo "#################################"
+cat ~/debbuild/BUILDROOT/DEBIAN/changelog
+echo "#################################"
+
+###########################################################################
+## 	Criando preinst para o pacote deb.
+
+echo "Creating ~/debbuild/BUILDROOT/DEBIAN/preinst"
+echo \
+    "#!/bin/bash
+
+set -e
+
+echo \"PREINST script\"
+if [ -f \"usr/lib/${PACKAGE_NAME}/config_template.sh\" ]; then
+    mv /usr/lib/${PACKAGE_NAME}/config_template.sh /usr/lib/${PACKAGE_NAME}/config_template~.sh
+fi
+
+if [ -f \"usr/lib/${PACKAGE_NAME}/scripts/create_profiles_gateways\" ]; then
+	mv /usr/lib/${PACKAGE_NAME}/scripts/create_profiles_gateways /usr/lib/${PACKAGE_NAME}/scripts/create_profiles_gateways~
+fi
+
+if [ -f \"usr/lib/${PACKAGE_NAME}/scripts/create_profiles_phones\" ]; then
+	mv /usr/lib/${PACKAGE_NAME}/scripts/create_profiles_phones /usr/lib/${PACKAGE_NAME}/scripts/create_profiles_phones~
+fi
+    " >~/debbuild/BUILDROOT/DEBIAN/preinst
+chmod +x ~/debbuild/BUILDROOT/DEBIAN/preinst
+
+echo "#################################"
+cat ~/debbuild/BUILDROOT/DEBIAN/preinst
+echo "#################################"
+
+###########################################################################
+## 	Criando postinst para o pacote deb.
+
+echo "Creating ~/debbuild/BUILDROOT/DEBIAN/postinst"
+echo \
+    "#!/bin/bash
+
+set -e
+
+echo \"POSTINST script\"
+if [ -f \"/usr/lib/${PACKAGE_NAME}/config_template~.sh\" ]; then
+    /usr/lib/${PACKAGE_NAME}/save_config.sh
+    rm -rf /usr/lib/${PACKAGE_NAME}/config_template~.sh
+fi
+
+if [ -f \"usr/lib/${PACKAGE_NAME}/scripts/create_profiles_gateways~\" ]; then
+	mv /usr/lib/${PACKAGE_NAME}/scripts/create_profiles_gateways~ /usr/lib/${PACKAGE_NAME}/scripts/create_profiles_gateways
+	rm -rf /usr/lib/${PACKAGE_NAME}/scripts/create_profiles_gateways~
+fi
+
+if [ -f \"usr/lib/${PACKAGE_NAME}/scripts/create_profiles_phones~\" ]; then
+	mv /usr/lib/${PACKAGE_NAME}/scripts/create_profiles_phones~ /usr/lib/${PACKAGE_NAME}/scripts/create_profiles_phones
+	rm -rf /usr/lib/${PACKAGE_NAME}/scripts/create_profiles_phones~
+fi
+
+    " >~/debbuild/BUILDROOT/DEBIAN/postinst
+chmod +x ~/debbuild/BUILDROOT/DEBIAN/postinst
+
+echo "#################################"
+cat ~/debbuild/BUILDROOT/DEBIAN/postinst
+echo "#################################"
+
+###########################################################################
+## 	O comando "dpkg-deb -b" está sendo usado aqui para montar o pacote deb
+##  atravez dos arquivos em ~/debbuild.
+
+echo "Creating .deb package."
+tree -a ~/debbuild
+mkdir -p "${LOCAL_DIR}/artifacts/$REPOSITORY_PATH/$TARGET_DISTRO/$TARGET_DISTRO_VERSION"
+dpkg-deb -Z xz -b ~/debbuild/BUILDROOT "${LOCAL_DIR}/artifacts/$REPOSITORY_PATH/$TARGET_DISTRO/$TARGET_DISTRO_VERSION"
+
+tree -a "${LOCAL_DIR}/artifacts/"
+echo "Done!"

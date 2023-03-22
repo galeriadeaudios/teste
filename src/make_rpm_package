@@ -1,0 +1,131 @@
+#!/bin/bash
+
+set -e
+
+LOCAL_DIR=$(pwd)
+
+VERSION_SUFIX="${REPOSITORY_PATH}.${PACKAGE_RELEASE}"
+
+echo "LOCAL_DIR: ${LOCAL_DIR}"
+echo "PACKAGE_VERSION: ${PACKAGE_VERSION}"
+echo "PACKAGE_NAME: ${PACKAGE_NAME}"
+echo "PACKAGE_RELEASE: ${PACKAGE_RELEASE}"
+echo "VERSION_SUFIX: ${VERSION_SUFIX}"
+echo "REPOSITORY_PATH: ${REPOSITORY_PATH}"
+echo "TARGET_DISTRO: ${TARGET_DISTRO}"
+echo "TARGET_DISTRO_VERSION: ${TARGET_DISTRO_VERSION}"
+
+###########################################################################
+## 	Montando o diretório de trabalho para o pacote rpm.
+
+echo "Creating RPM Packaging Workspace."
+rm -Rf ~/rpmbuild
+rpmdev-setuptree
+
+rm -Rf "/tmp/package_src/"
+TMPDIR="/tmp/package_src/${PACKAGE_NAME}-${PACKAGE_VERSION}"
+mkdir -p "${TMPDIR}"
+cp -r "src" "${TMPDIR}"
+
+echo "Version Control System. ${PACKAGE_VERSION}-${REPOSITORY_PATH%%[^a-z]*}.${PACKAGE_RELEASE}"
+eval "sed -i 's,^VERSION=\\\".*,VERSION=\\\"${PACKAGE_VERSION}-${REPOSITORY_PATH%%[^a-z]*}.${PACKAGE_RELEASE}\\\",g' ${TMPDIR}/src/${PACKAGE_NAME}.sh"
+
+cd "/tmp/package_src/"
+tar -cvzf "${TMPDIR##*/}.tar.gz" "${TMPDIR##*/}"
+mv "${TMPDIR##*/}.tar.gz" ~/rpmbuild/SOURCES/
+cd "${LOCAL_DIR}"
+
+###########################################################################
+## 	Criando arquivos de especificação para o pacote rpm.
+
+mapfile -t array < <(grep -n "^#" README.md | grep "${PACKAGE_NAME}" -A1 | cut -d: -f1)
+DESCRIPTION="$(sed -n "${array[0]},${array[1]:-\$} p" README.md | sed "/^#\|^$/d")"
+SUMMARY="${DESCRIPTION%%.*}"
+
+mapfile -t array < <(grep -n "^#" README.md | grep "Changelog" -A1 | cut -d: -f1)
+CHANGELOG="$(sed -n "${array[0]},${array[1]:-\$} p" README.md | sed "/^#\|^$/d")"
+
+echo "Creating ~/rpmbuild/SPECS/${PACKAGE_NAME}.spec"
+echo \
+"Name:           ${PACKAGE_NAME}
+Version:        ${PACKAGE_VERSION}
+Release:        ${VERSION_SUFIX}%{?dist}
+Summary:        ${SUMMARY}
+License:        Private
+Source0:        %{name}-%{version}.tar.gz
+Requires:       tree xmlstarlet
+
+%description
+${DESCRIPTION}
+
+%global debug_package %{nil}
+
+%prep
+%setup -q
+
+%build
+cat > %{name} <<-EOF
+#!/bin/bash
+%{_libdir}/%{name}/%{name}.sh \\\${@}
+EOF
+
+%install
+mkdir -p %{buildroot}/%{_bindir}
+install -m 0755 %{name} %{buildroot}/%{_bindir}/
+mkdir -p %{buildroot}/%{_libdir}/%{name}
+cp -r ./src/* %{buildroot}/%{_libdir}/%{name}/
+
+echo \"Checking installed files.\"
+find %{buildroot} \( -type f -o -type l \) -print | eval \"sed 's,^%{buildroot},,g'\" > file-lists
+
+%pre
+if [ -f "/%{_libdir}/%{name}/config_template.sh" ]; then
+    mv "/%{_libdir}/%{name}/config_template.sh" "%{_libdir}/%{name}/config_template~.sh"
+fi
+if [ -f "/%{_libdir}/%{name}/scripts/create_profiles_gateways" ]; then
+	mv "/%{_libdir}/%{name}/scripts/create_profiles_gateways" "%{_libdir}/%{name}/scripts/create_profiles_gateways~"
+fi
+if [ -f "/%{_libdir}/%{name}/scripts/create_profiles_phones" ]; then
+	mv "/%{_libdir}/%{name}/scripts/create_profiles_phones" "%{_libdir}/%{name}/scripts/create_profiles_phones~"
+fi
+
+%post
+if [ -f "/%{_libdir}/%{name}/config_template~.sh" ]; then
+    bash "/%{_libdir}/%{name}/save_config.sh"
+    rm -rf "/%{_libdir}/%{name}/config_template~.sh"
+fi
+if [ -f "/%{_libdir}/%{name}/scripts/create_profiles_gateways~" ]; then
+	mv "/%{_libdir}/%{name}/scripts/create_profiles_gateways~" "%{_libdir}/%{name}/scripts/create_profiles_gateways"
+	rm -rf "/%{_libdir}/%{name}/scripts/create_profiles_gateways~"
+fi
+if [ -f "%{_libdir}/%{name}/scripts/create_profiles_phones~" ]; then
+	mv "/%{_libdir}/%{name}/scripts/create_profiles_phones~" "/%{_libdir}/%{name}/scripts/create_profiles_phones"
+	rm -rf "/%{_libdir}/%{name}/scripts/create_profiles_gateways~"
+fi
+
+%files -f file-lists
+%dir /%{_libdir}/%{name}/
+
+%changelog
+${CHANGELOG}
+" >~/rpmbuild/SPECS/${PACKAGE_NAME}.spec
+
+echo "#################################"
+cat ~/rpmbuild/SPECS/${PACKAGE_NAME}.spec
+echo "#################################"
+
+###########################################################################
+## 	O comando "rpmbuild -bb" está sendo usado aqui para montar o pacote rpm
+##  atravez dos arquivos em ~/rpmbuild.
+
+echo "Creating .rpm package."
+tree -a ~/rpmbuild
+mkdir -p "${LOCAL_DIR}/artifacts/${REPOSITORY_PATH}/${TARGET_DISTRO}/${TARGET_DISTRO_VERSION}"
+rpmbuild -bb ~/rpmbuild/SPECS/${PACKAGE_NAME}.spec
+find ~/rpmbuild/RPMS
+for PACKAGE in $(find ~/rpmbuild/RPMS \( -name "*-*.rpm" -a -not -name "*-*debug*-*.rpm" \)); do
+	mv "${PACKAGE}" "${LOCAL_DIR}/artifacts/${REPOSITORY_PATH}/${TARGET_DISTRO}/${TARGET_DISTRO_VERSION}/"
+done
+
+tree -a "${LOCAL_DIR}/artifacts/"
+echo "Done!"

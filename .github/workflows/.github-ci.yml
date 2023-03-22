@@ -1,0 +1,133 @@
+image: ubuntu:latest
+
+stages:
+  - vcs
+  - package
+  - test
+  - deploy
+
+variables:
+  PACKAGE_VERSION: "1.0.0"
+  PACKAGE_NAME: "${CI_PROJECT_NAME}"
+  PACKAGE_RELEASE: "${CI_PIPELINE_IID}"
+  REPOSITORY_PATH: "${CI_COMMIT_BRANCH}"
+
+.job_template: &job_configuration
+  before_script:
+    - if [ "${REPOSITORY_PATH}" = 'develop' ] ; then export REPOSITORY_PATH="adev" ; else export REPOSITORY_PATH="${REPOSITORY_PATH%%[^a-z]*}" ; fi
+  artifacts:
+    expire_in: 300 min
+    paths:
+      - artifacts/
+  only:
+    - develop
+    - /^alpha.*$/
+    - /^beta.*$/
+    - /^hotfix.*$/
+    - main
+
+##############################################################################
+vcs:
+  stage: vcs
+  script:
+    - echo "Version Control System."
+    - pwd
+    - ls -la
+    - cd src
+    - eval "sed -i 's,^VERSION=\\\".*,VERSION=\\\"${PACKAGE_VERSION}-${REPOSITORY_PATH%%[^a-z]*}.${PACKAGE_RELEASE}\\\",g' gitprocess.sh"
+  <<: *job_configuration
+  artifacts:
+    paths:
+      - src/gitprocess.sh
+
+##############################################################################
+rpm_fedora35_package:
+  image: fedora:35
+  stage: package
+  variables:
+    TARGET_DISTRO: "fedora"
+    TARGET_DISTRO_VERSION: "35"
+  script:
+    - dnf -y update
+    - dnf -y install rpm-build rpm-devel rpmlint rpmdevtools tree make texinfo autoconf libtool
+    - pwd
+    - ls -la
+    - ./make_rpm_package
+  <<: *job_configuration
+
+##############################################################################
+rpm_fedora36_package:
+  image: fedora:36
+  stage: package
+  variables:
+    TARGET_DISTRO: "fedora"
+    TARGET_DISTRO_VERSION: "36"
+  script:
+    - dnf -y update
+    - dnf -y install rpm-build rpm-devel rpmlint rpmdevtools tree make texinfo autoconf libtool
+    - pwd
+    - ls -la
+    - ./make_rpm_package
+  <<: *job_configuration
+
+#############################################################################
+deb_debian11_package:
+  image: debian:bullseye
+  stage: package
+  variables:
+    TARGET_DISTRO: "debian"
+    TARGET_DISTRO_VERSION: "bullseye"
+  script:
+    - apt update
+    - apt -y install build-essential make automake tree curl
+    - ./make_deb_package
+  <<: *job_configuration
+
+#############################################################################
+deb_ubuntu-focal_package:
+  image: ubuntu:focal
+  stage: package
+  variables:
+    TARGET_DISTRO: "ubuntu"
+    TARGET_DISTRO_VERSION: "focal"
+  script:
+    - apt update
+    - apt -y install build-essential make automake tree curl
+    - ./make_deb_package
+  <<: *job_configuration
+
+############################################################################
+
+deb_ubuntu-jammy_package:
+  image: ubuntu:jammy
+  stage: package
+  variables:
+    TARGET_DISTRO: "ubuntu"
+    TARGET_DISTRO_VERSION: "jammy"
+  script:
+    - apt update
+    - apt -y install build-essential make automake tree curl
+    - ./make_deb_package
+  <<: *job_configuration
+
+##############################################################################
+repository_deploy:
+  image: ruby:2.7.5
+  stage: deploy
+  script:
+    - echo "{\"url\":\"https://packagecloud.io\",\"token\":\"${PACKAGE_CLOUD_TOKEN}\"}" > ~/.packagecloud
+    - gem install package_cloud
+    - ls -la
+    - pwd
+    - |
+      for PACKAGE in $(find artifacts/ -name "*.deb" -o -name "*.rpm"); do
+        echo "PACKAGE=${PACKAGE}"
+        PACKAGE_FOLDER=${PACKAGE#*/}
+        PACKAGE_FOLDER=${PACKAGE_FOLDER%/*}
+        package_cloud yank "${PACKAGE_CLOUD_USER}/${PACKAGE_FOLDER}" ${PACKAGE##*/} || echo "FAILED"
+        package_cloud push "${PACKAGE_CLOUD_USER}/${PACKAGE_FOLDER}" ${PACKAGE}
+      done
+  <<: *job_configuration
+
+
+
